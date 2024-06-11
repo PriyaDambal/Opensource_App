@@ -3,9 +3,13 @@ import requests
 import json
 import streamlit as st
 import matplotlib.pyplot as plt
+import plotly.express as px
+import time
+
 
 def get_chromium_data(user):
-    chromium_url = f"https://chromium-review.googlesource.com/changes/?q=owner:{user}"
+    chromium_url = f"https://chromium-review.googlesource.com/changes/?q=author:{user}+status:merged"
+    print("Invoking chromium-review web API...", chromium_url)
     response_chromium = requests.get(chromium_url)
     if response_chromium.status_code == 200:
         output_chromium = response_chromium.text
@@ -25,11 +29,16 @@ def get_chromium_data(user):
                         "Repo": "Chromium",
                         "URL": chromium_url
                     })
-        return chromium_data
+                else:
+                    print("Unexpected format of JSON data from chromium-review.")
+            return chromium_data
+    else:
+        print(f"Failed to fetch data from chromium-review for user: {user}")
+
     return []
 
 def get_android_data(user):
-    android_url = f"https://android-review.googlesource.com/changes/?q=owner:{user}"
+    android_url = f"https://android-review.googlesource.com/changes/?q=owner:{user}+status:merged"
     response_android = requests.get(android_url)
     if response_android.status_code == 200:
         output_android = response_android.text
@@ -49,8 +58,9 @@ def get_android_data(user):
                         "Repo": "Android",
                         "URL": android_url
                     })
-        return android_data
+            return android_data
     return []
+
 
 def get_gitlab_data(user):
     gitlab_url = f"https://gitlab.freedesktop.org/api/v4/projects/176/repository/commits?author={user}"
@@ -73,9 +83,8 @@ def get_gitlab_data(user):
                         "Repo": "GitLab",
                         "URL": gitlab_url
                     })
-        return gitlab_data
+            return gitlab_data
     return []
-
 def get_github_data(user_email, repo_name):
     if user_email:
         github_url = f"https://api.github.com/repos/{repo_name}/commits"
@@ -103,12 +112,12 @@ def get_github_data(user_email, repo_name):
                 return commits_df
         except requests.exceptions.RequestException as e:
             st.error(f"Error fetching data from GitHub: {e}")
-    return None
+    return pd.DataFrame()
 
 # Streamlit application
 st.title("Open Source Contribution Fetcher")
 
-email_input = st.text_input("Enter the email ID of the person:")
+emails_input = st.text_input("Enter the email IDs of the persons (comma separated):")
 
 # Checkboxes to select open-source repositories
 chromium_selected = st.checkbox('Chromium')
@@ -121,36 +130,59 @@ if github_selected:
     repo_name = st.text_area("Enter GitHub repository names (comma separated):").split(',')
 
 if st.button("Fetch Data"):
-    if email_input:
-        chromium_data_df = pd.DataFrame()
-        android_data_df = pd.DataFrame()
-        gitlab_data_df = pd.DataFrame()
-        github_data_df = pd.DataFrame()
+    if emails_input:
+        email_list = [email.strip() for email in emails_input.split(",")]
 
         total_commits = 0
+        no_commits_found = []
+        all_data = []
 
-        if chromium_selected:
-            chromium_data_list = get_chromium_data(email_input)
-            chromium_data_df = pd.DataFrame(chromium_data_list)
-            total_commits += len(chromium_data_df)
+        for email in email_list:
+            chromium_data_df = pd.DataFrame()
+            android_data_df = pd.DataFrame()
+            gitlab_data_df = pd.DataFrame()
+            github_data_df = pd.DataFrame()
 
-        if android_selected:
-            android_data_list = get_android_data(email_input)
-            android_data_df = pd.DataFrame(android_data_list)
-            total_commits += len(android_data_df)
+            if chromium_selected:
+                chromium_data_list = get_chromium_data(email)
+                if chromium_data_list:
+                    chromium_data_df = pd.DataFrame(chromium_data_list)
+                else:
+                    no_commits_found.append(f"Chromium: {email}")
+                total_commits += len(chromium_data_df)
 
-        if gitlab_selected:
-            gitlab_data_list = get_gitlab_data(email_input)
-            gitlab_data_df = pd.DataFrame(gitlab_data_list)
-            total_commits += len(gitlab_data_df)
+            if android_selected:
+                android_data_list = get_android_data(email)
+                if android_data_list:
+                    android_data_df = pd.DataFrame(android_data_list)
+                else:
+                    no_commits_found.append(f"Android: {email}")
+                total_commits += len(android_data_df)
 
-        if github_selected and repo_name:
-            github_data_list = [get_github_data(email_input, repo.strip()) for repo in repo_name]
-            github_data_df = pd.concat([pd.DataFrame(data) for data in github_data_list if data is not None], ignore_index=True)
-            total_commits += len(github_data_df)
+            if gitlab_selected:
+                gitlab_data_list = get_gitlab_data(email)
+                if gitlab_data_list:
+                    gitlab_data_df = pd.DataFrame(gitlab_data_list)
+                else:
+                    no_commits_found.append(f"GitLab: {email}")
+                total_commits += len(gitlab_data_df)
+
+            if github_selected and repo_name:
+                github_data_list = [get_github_data(email, repo.strip()) for repo in repo_name]
+                github_data_list = [data for data in github_data_list if not data.empty]
+                if github_data_list:
+                    github_data_df = pd.concat(github_data_list, ignore_index=True)
+                else:
+                    no_commits_found.append(f"GitHub: {email}")
+                total_commits += len(github_data_df)
+
+            # Consolidate all data for the current user
+            user_data_df = pd.concat([chromium_data_df, android_data_df, gitlab_data_df, github_data_df],
+                                     ignore_index=True)
+            all_data.append(user_data_df)
 
         # Consolidate all data into a single DataFrame
-        consolidated_df = pd.concat([chromium_data_df, android_data_df, gitlab_data_df, github_data_df], ignore_index=True)
+        consolidated_df = pd.concat(all_data, ignore_index=True)
 
         # Display the consolidated data
         st.dataframe(consolidated_df)
@@ -158,25 +190,30 @@ if st.button("Fetch Data"):
         # Display the total number of commits
         st.subheader(f"Total Commits: {total_commits}")
 
-        # Extract the year from the "updated" column and count the number of commits per year
-        consolidated_df['updated'] = pd.to_datetime(consolidated_df['updated'], errors='coerce')
-        consolidated_df['year'] = consolidated_df['updated'].dt.year
-        commits_per_year = consolidated_df['year'].value_counts().sort_index()
+        # Display the repositories with no commits found
+        if no_commits_found:
+            st.subheader("No commits found in the following repositories for the users:")
+            st.write(", ".join(no_commits_found))
 
-        # Plot the number of commits per year
-        fig, ax = plt.subplots()
-        commits_per_year.plot(kind='bar', ax=ax)
-        ax.set_title("Number of Commits per Year")
-        ax.set_xlabel("Year")
-        ax.set_ylabel("Number of Commits")
-        st.pyplot(fig)
+            # Extract the year from the "updated" column and count the number of commits per year
+            consolidated_df['updated'] = pd.to_datetime(consolidated_df['updated'], errors='coerce')
+            consolidated_df['year'] = consolidated_df['updated'].dt.year
+            commits_per_year = consolidated_df['year'].value_counts().sort_index()
 
-        # Count the number of commits by open-source repository
-        commits_by_repo = consolidated_df['Repo'].value_counts()
+            # Plot the number of commits per year
+            fig, ax = plt.subplots()
+            commits_per_year.plot(kind='bar', ax=ax)
+            ax.set_title("Number of Commits per Year")
+            ax.set_xlabel("Year")
+            ax.set_ylabel("Number of Commits")
+            st.pyplot(fig)
 
-        # Plot the number of commits by open-source repository as a donut chart
-        fig2, ax2 = plt.subplots()
-        ax2.pie(commits_by_repo, labels=commits_by_repo.index, autopct='%1.1f%%', startangle=90, wedgeprops={'width': 0.3})
-        ax2.set_title("Number of Commits by Open Source Repository")
-        st.pyplot(fig2)
+            # Count the number of commits by open-source repository
+            commits_by_repo = consolidated_df['Repo'].value_counts()
 
+            # Plot the number of commits by open-source repository as a donut chart
+            fig2, ax2 = plt.subplots()
+            ax2.pie(commits_by_repo, labels=commits_by_repo.index, autopct='%1.1f%%', startangle=90,
+                    wedgeprops={'width': 0.3})
+            ax2.set_title("Number of Commits by Open Source Repository")
+            st.pyplot(fig2)
